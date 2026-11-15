@@ -73,12 +73,10 @@ func hashAll(files []File, minQuality pdq.Quality, workers int) ([]hashed, int, 
 
 // nearGroups clusters hashes that lie within threshold of each other.
 //
-// The clustering is single-linkage by union-find: A joins B's group when A is
-// close to ANY member, not to all of them. ⛔ That is a deliberate choice and
-// it has a consequence worth stating: a chain of images each close to the
-// next can put the two ends in one group although they are far apart. The
-// group's reported Distance is therefore the WIDEST distance inside it, so a
-// stretched chain is visible instead of hidden.
+// The clustering is single-linkage, shared with the audio and video passes:
+// see unionFind for the consequence that choice carries. The group's reported
+// Distance is the WIDEST distance inside it, so a stretched chain is visible
+// instead of hidden.
 func nearGroups(hs []hashed, threshold int, claimed map[string]bool) []Group {
 	// Files already reported as exact duplicates are not repeated here.
 	var todo []hashed
@@ -88,51 +86,17 @@ func nearGroups(hs []hashed, threshold int, claimed map[string]bool) []Group {
 		}
 	}
 
-	parent := make([]int, len(todo))
-	for i := range parent {
-		parent[i] = i
-	}
-	var find func(int) int
-	find = func(i int) int {
-		for parent[i] != i {
-			parent[i] = parent[parent[i]]
-			i = parent[i]
-		}
-		return i
-	}
-	union := func(a, b int) {
-		ra, rb := find(a), find(b)
-		if ra != rb {
-			parent[ra] = rb
-		}
-	}
-
+	uf := newUnionFind(len(todo))
 	for i := 0; i < len(todo); i++ {
 		for j := i + 1; j < len(todo); j++ {
 			if todo[i].hash.Distance(todo[j].hash) <= threshold {
-				union(i, j)
+				uf.union(i, j)
 			}
 		}
 	}
 
-	members := map[int][]int{}
-	for i := range todo {
-		r := find(i)
-		members[r] = append(members[r], i)
-	}
-
-	roots := make([]int, 0, len(members))
-	for r := range members {
-		roots = append(roots, r)
-	}
-	sort.Ints(roots)
-
 	var groups []Group
-	for _, r := range roots {
-		idx := members[r]
-		if len(idx) < 2 {
-			continue
-		}
+	for _, idx := range uf.groups() {
 		var g Group
 		g.Kind = "near"
 		for _, i := range idx {
