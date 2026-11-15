@@ -167,7 +167,7 @@ func TestReportsTheVolumeScanned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out, "scanned 0 file(s)") {
+	if !strings.Contains(out, "walked 0 file(s)") {
 		t.Fatalf("an empty tree did not say how much it read:\n%s", out)
 	}
 }
@@ -222,7 +222,7 @@ func TestMinSizeSkipsSmallFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out, "scanned 0 file(s)") {
+	if !strings.Contains(out, "walked 0 file(s)") {
 		t.Fatalf("--min-size did not skip a small file:\n%s", out)
 	}
 }
