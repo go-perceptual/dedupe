@@ -8,8 +8,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/go-avkit/avkit/container"
-	"github.com/go-avkit/decode"
+	"github.com/go-perceptual/media"
 	"github.com/go-perceptual/pdq"
 	"github.com/go-perceptual/tmk"
 )
@@ -19,15 +18,16 @@ import (
 //
 // ⛔ This is a PREFILTER, and it is deliberately looser than the decision
 // threshold. Level 1 is the mean frame and carries no timing at all, so it
-// cannot separate a film from the same film re-cut -- but it will separate a
+// cannot separate a film from the same film re-cut — but it will separate a
 // film from an unrelated one, cheaply, and that is all a prefilter has to do.
 // Set it at the decision threshold and the prefilter starts making the
 // decision, discarding pairs level 2 would have confirmed.
 //
 // ⚠ It is a real recall risk and not a free optimisation: a pair that level 1
 // scores below this is never looked at again. 0.5 is half way between the 0.7
-// decision and the 0.0 of unrelated material, which leaves the prefilter well
-// clear of the decision it must not make.
+// decision and the 0.0 of unrelated material. Measured on the fixtures: a
+// clip scores 0.9851 against its half-scale copy and 0.9881 against its
+// quarter-scale one, while an unrelated clip scores -0.0829.
 const Level1Gate = 0.5
 
 // videoSecondsDefault bounds how much of each video is hashed.
@@ -39,14 +39,10 @@ const Level1Gate = 0.5
 //
 // ⚠ What it costs: two videos that differ only after the window are reported
 // as the same. Three minutes is enough to separate different films and short
-// enough to keep a scan interactive; raise --video-seconds when the tree is
-// full of long recordings of the same scene.
+// enough to keep a scan interactive.
 const videoSecondsDefault = 180
 
-var errNoFrames = errors.New("no video frames could be decoded")
-
-// videoHash is one video's level-1 signature plus what is needed to rebuild
-// its level-2 one.
+// videoHash is one video's signature.
 type videoHash struct {
 	File
 	hash *tmk.Hash
@@ -54,73 +50,34 @@ type videoHash struct {
 
 // hashVideoFile decodes a file and hashes it.
 //
+// Decoding and the resampling to tmk.FPS are go-perceptual/media's — including
+// the part that is easy to get wrong and impossible to notice: frames are
+// resampled BY TIME, not by taking every nth frame, so a 30 fps and a 25 fps
+// copy of one film land on the same indices.
+//
 // level2 says whether the level-2 features are kept. ⛔ They are 262 KB per
 // video against 1 KB for level 1, so a tree of five hundred videos is 131 MB
 // of level-2 features held at once, before any comparison. TMK's own
 // documentation calls the level-1 feature "what a large index stores", and
 // this is that design used as intended: sweep on level 1, and pay for level 2
 // only on the pairs that survive. The cost is decoding a candidate twice,
-// which is the right trade -- a tree where few videos match barely pays it,
-// and a tree where everything matches was going to be expensive anyway.
+// which is the right trade — a tree where few videos match barely pays it.
 func hashVideoFile(path string, maxSeconds int, level2 bool) (*tmk.Hash, error) {
-	r, closeFile, err := container.OpenFile(path)
-	if err != nil {
-		return nil, err
-	}
-	defer closeFile()
-
-	id, err := decode.FirstVideoTrack(r)
-	if err != nil {
-		return nil, err
-	}
-	frames, err := decode.DecodeTrack(r, id, decode.Config{})
-	if err != nil {
-		return nil, err
-	}
-	if len(frames) == 0 {
-		return nil, errNoFrames
-	}
-
-	var timescale uint32 = 1
-	for _, tr := range r.File().Tracks {
-		if tr.ID == id {
-			timescale = tr.Timescale
-		}
-	}
-	if timescale == 0 {
-		return nil, fmt.Errorf("the track declares a timescale of zero")
-	}
-	seconds := func(i int) float64 { return float64(frames[i].PTS) / float64(timescale) }
-
-	duration := seconds(len(frames)-1) - seconds(0)
-	if maxSeconds > 0 && duration > float64(maxSeconds) {
-		duration = float64(maxSeconds)
-	}
-	steps := int(duration*tmk.FPS) + 1
-
 	h := tmk.New()
-	cursor := 0
-	for step := 0; step < steps; step++ {
-		// ⛔ Frames are resampled to tmk.FPS by TIME, not by taking every nth
-		// frame. The kernel compares phases at integer frame indices, so a 30
-		// fps and a 25 fps copy of one film must land on the SAME indices,
-		// which happens only if each index is filled by the frame showing at
-		// that instant.
-		want := seconds(0) + float64(step)/tmk.FPS
-		for cursor+1 < len(frames) && seconds(cursor+1) <= want {
-			cursor++
-		}
-		img, err := frameImage(frames[cursor])
-		if err != nil {
-			return nil, err
-		}
+	err := media.Frames(path, tmk.FPS, maxSeconds, func(index int, img image.Image) error {
 		feature, _, err := pdq.Float(img)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		h.Add(step, feature)
+		// ⛔ The INDEX media hands over, not a counter of our own: tmk.Add
+		// takes the frame's position in TIME, and the kernel compares phases
+		// at those integer positions.
+		h.Add(index, feature)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-
 	out, err := h.Finish()
 	if err != nil {
 		return nil, err
@@ -132,34 +89,6 @@ func hashVideoFile(path string, maxSeconds int, level2 bool) (*tmk.Hash, error) 
 		out.Cos, out.Sin = nil, nil
 	}
 	return out, nil
-}
-
-// frameImage wraps a decoded frame's planes as an image without copying them.
-func frameImage(f decode.Frame) (image.Image, error) {
-	if f.BitDepth != 8 {
-		// ⛔ Said plainly rather than silently truncating: a 10-bit frame
-		// shifted down to 8 would hash, and would hash DIFFERENTLY from the
-		// same film delivered as 8-bit -- so one film would get two
-		// fingerprints, which is the one thing a deduplicator must not do.
-		return nil, fmt.Errorf("%d-bit video is not handled yet (8-bit only)", f.BitDepth)
-	}
-	var ratio image.YCbCrSubsampleRatio
-	switch f.Chroma {
-	case decode.Chroma420:
-		ratio = image.YCbCrSubsampleRatio420
-	case decode.Chroma422:
-		ratio = image.YCbCrSubsampleRatio422
-	case decode.Chroma444:
-		ratio = image.YCbCrSubsampleRatio444
-	default:
-		return nil, fmt.Errorf("chroma sampling %v is not handled", f.Chroma)
-	}
-	return &image.YCbCr{
-		Y: f.Y, Cb: f.Cb, Cr: f.Cr,
-		YStride: f.YStride, CStride: f.CStride,
-		SubsampleRatio: ratio,
-		Rect:           image.Rect(0, 0, f.Width, f.Height),
-	}, nil
 }
 
 // hashVideos computes the level-1 signature of every video, in parallel.
@@ -183,7 +112,7 @@ func hashVideos(files []File, maxSeconds, workers int) ([]videoHash, int, []erro
 			for f := range in {
 				h, err := hashVideoFile(f.Path, maxSeconds, false)
 				switch {
-				case errors.Is(err, errNoFrames):
+				case errors.Is(err, media.ErrNoFrames):
 					out <- outcome{skipped: true}
 				case err != nil:
 					out <- outcome{err: fmt.Errorf("%s: %w", f.Path, err)}
