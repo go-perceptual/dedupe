@@ -99,13 +99,19 @@ func TestLoweringTheQualityFloorLetsThemThrough(t *testing.T) {
 }
 
 // TestADirectoryItCannotEnterIsReported covers the walk's own error path.
-// It is skipped when the process can read anything regardless of mode, which
-// is the case for root: asserting an EACCES that cannot happen would be a
-// test that passes for the wrong reason.
+//
+// ⛔ It CHECKS its own premise instead of predicting which platforms honour
+// it. `chmod 000` makes a directory unenterable on Unix as an ordinary user;
+// it does nothing of the sort for root, and on Windows os.Chmod only toggles
+// the read-only attribute, which does not block traversal at all. Guarding on
+// os.Geteuid() missed Windows entirely — it answers -1 there — and the test
+// went red on one platform out of three.
+//
+// So the mechanism is applied and then TESTED: if the directory is still
+// readable afterwards, this platform cannot stage the condition and there is
+// nothing to assert. A test that declares what it needs and measures whether
+// it got it cannot pass for the wrong reason on a platform nobody listed.
 func TestADirectoryItCannotEnterIsReported(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: an unreadable directory is still readable, so this asserts nothing")
-	}
 	dir := t.TempDir()
 	locked := filepath.Join(dir, "locked")
 	if err := os.MkdirAll(locked, 0o755); err != nil {
@@ -113,9 +119,12 @@ func TestADirectoryItCannotEnterIsReported(t *testing.T) {
 	}
 	writePNG(t, filepath.Join(locked, "x.png"), picture(120, 90, 3))
 	if err := os.Chmod(locked, 0o000); err != nil {
-		t.Skipf("cannot make a directory unreadable here: %v", err)
+		t.Skipf("cannot change the mode of a directory here: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	if _, err := os.ReadDir(locked); err == nil {
+		t.Skip("this platform still reads a directory after chmod 000, so an unreadable directory cannot be staged here")
+	}
 
 	out, err := runCLI(t, dir)
 	if err != nil {
