@@ -5,15 +5,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
-	"strings"
+	"sync"
 
 	"github.com/go-perceptual/pdq"
 )
@@ -22,19 +20,27 @@ import (
 type File struct {
 	Path string
 	Size int64
+	// Media is what the file turned out to HOLD, decided by reading it.
+	Media Kind
 }
 
 // Group is a set of files that are duplicates of one another.
 type Group struct {
-	// Kind is "exact" when the bytes are identical, "near" when only the
-	// pictures are.
+	// Kind is "exact" when the bytes are identical, or "near", "audio" or
+	// "video" for the three perceptual passes.
 	Kind string
 	// Files are the members, largest first, so the first is the natural one
 	// to keep.
 	Files []File
-	// Distance is the largest perceptual distance inside the group; 0 for an
-	// exact group.
+	// Distance is the largest perceptual distance inside the group, for the
+	// image pass; 0 otherwise.
 	Distance int
+	// Score is the LOWEST pairwise similarity inside the group, for the audio
+	// and video passes; 0 otherwise.
+	//
+	// ⛔ The lowest, not the average or the best. Single-linkage clustering
+	// can stretch a group along a chain, and only the worst pair shows it.
+	Score float64
 }
 
 // Recoverable is the number of bytes freed by keeping one member and losing
@@ -49,14 +55,6 @@ func (g Group) Recoverable() int64 {
 		n += f.Size
 	}
 	return n
-}
-
-// imageExts are the formats this build can decode. ⛔ Kept beside the blank
-// imports above on purpose: adding a decoder without adding its extension
-// here makes the tool silently ignore that format, which looks exactly like
-// "no duplicates found".
-var imageExts = map[string]bool{
-	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
 }
 
 // walk collects the candidate files under each root.
@@ -81,9 +79,10 @@ func walk(roots []string, minSize int64) ([]File, []error) {
 			if !d.Type().IsRegular() {
 				return nil // symlinks and devices are not content
 			}
-			if !imageExts[strings.ToLower(filepath.Ext(p))] {
-				return nil
-			}
+			// ⛔ No extension filter. It used to be here, and it was wrong:
+			// an extension is a claim by whoever named the file, and this
+			// tool's whole job is finding the copy that was renamed. What
+			// a file holds is decided by classifyAll, which reads it.
 			info, err := d.Info()
 			if err != nil {
 				errs = append(errs, err)
@@ -110,6 +109,89 @@ func walk(roots []string, minSize int64) ([]File, []error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, errs
+}
+
+// classifyAll reads each file's header and keeps only the media ones.
+//
+// ⛔ This replaced an extension filter, and the change is the point rather
+// than a refinement. The old gate trusted the name, so a film saved as
+// `video.dat`, a photograph renamed `.thumb`, or an MP3 with no extension at
+// all were invisible -- and in a DEDUPLICATOR an invisible file reads as "no
+// duplicates found", which is indistinguishable from a clean tree. The cost
+// is one open and one 64 KiB read per file in the tree, which is what buys
+// the answer being about the tree rather than about its naming conventions.
+//
+// The count of files that are not media is returned, not dropped silently: a
+// scan of ten thousand files that classified nine thousand as other has
+// either met a tree with little media in it or a broken classifier, and only
+// the number distinguishes those.
+func classifyAll(files []File, workers int) (media []File, other int, errs []error) {
+	if workers < 1 {
+		workers = runtime.NumCPU()
+	}
+	type outcome struct {
+		f     File
+		other bool
+		err   error
+	}
+	in := make(chan File)
+	out := make(chan outcome)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for f := range in {
+				k, err := classify(f.Path)
+				switch {
+				case err != nil:
+					out <- outcome{err: err}
+				case k == KindOther:
+					out <- outcome{other: true}
+				default:
+					f.Media = k
+					out <- outcome{f: f}
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, f := range files {
+			in <- f
+		}
+		close(in)
+		wg.Wait()
+		close(out)
+	}()
+
+	for o := range out {
+		switch {
+		case o.err != nil:
+			errs = append(errs, o.err)
+		case o.other:
+			other++
+		default:
+			media = append(media, o.f)
+		}
+	}
+	sort.Slice(media, func(i, j int) bool { return media[i].Path < media[j].Path })
+	return media, other, errs
+}
+
+// byKind splits classified files into the three perceptual passes.
+func byKind(files []File) (images, audio, video []File) {
+	for _, f := range files {
+		switch f.Media {
+		case KindImage:
+			images = append(images, f)
+		case KindAudio:
+			audio = append(audio, f)
+		case KindVideo:
+			video = append(video, f)
+		}
+	}
+	return
 }
 
 // contentHash is the SHA-256 of a file's bytes.

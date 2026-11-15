@@ -1,15 +1,17 @@
 // dedupe finds duplicate and near-duplicate media in a directory tree.
 //
-// It runs two passes. The first finds files whose BYTES are identical,
-// grouping by size and hashing only same-size candidates. The second finds
-// files whose PICTURES are the same although their bytes are not —
-// recompressed, resized, re-encoded — using the PDQ perceptual hash.
+// It classifies every file by READING it, then runs four passes. The first
+// finds files whose BYTES are identical, grouping by size and hashing only
+// same-size candidates. The other three find files whose CONTENT is the same
+// although their bytes are not — recompressed, resized, re-encoded, converted
+// — one per medium: PDQ for pictures, chroma for recordings, TMK+PDQF for
+// video.
 //
 // ⛔ It reports. It does not delete, move or link anything, and it takes no
 // flag that would: the output is a list for a person to act on. A tool that
 // removes files on the strength of a similarity threshold is a tool that
-// removes the wrong file eventually, and the second pass is a HEURISTIC with
-// a documented false-positive mode.
+// removes the wrong file eventually, and the perceptual passes are HEURISTICS
+// with documented false-positive modes.
 package main
 
 import (
@@ -18,6 +20,7 @@ import (
 	"sort"
 
 	"github.com/go-perceptual/pdq"
+	"github.com/go-perceptual/tmk"
 	"github.com/spf13/cobra"
 )
 
@@ -35,11 +38,16 @@ func main() {
 // through SetArgs/SetOut/SetErr instead of spawning a process.
 func RootCmd() *cobra.Command {
 	var (
-		threshold  int
-		minQuality int
-		minSize    int64
-		workers    int
-		exactOnly  bool
+		threshold      int
+		minQuality     int
+		minSize        int64
+		workers        int
+		exactOnly      bool
+		audioThreshold float64
+		videoThreshold float64
+		audioSeconds   int
+		videoSeconds   int
+		only           string
 	)
 
 	cmd := &cobra.Command{
@@ -47,10 +55,17 @@ func RootCmd() *cobra.Command {
 		Short: "Find duplicate and near-duplicate media in a directory tree",
 		Long: `Find duplicate and near-duplicate media in a directory tree.
 
-Two passes. The first reports files whose BYTES are identical. The second
-reports files whose PICTURES are the same although their bytes differ, using
-the PDQ perceptual hash: a distance of 0 is the same picture, 30 or less is a
-confident match, and unrelated pictures sit around 128.
+Every file is classified by READING it, never by its extension: a film saved
+as .dat and a photograph renamed .thumb are exactly the copies this tool
+exists to find.
+
+Then four passes. The first reports files whose BYTES are identical. The other
+three report files whose content is the same although their bytes differ:
+
+  pictures   PDQ Hamming distance — 0 is the same picture, 30 or less a
+             confident match, unrelated pictures sit around 128
+  recordings chroma score — 0.9 or more is the same recording
+  video      TMK+PDQF score — 0.7 or more is the same video
 
 dedupe REPORTS. It never deletes, moves or links anything.`,
 		Args:         cobra.MinimumNArgs(1),
@@ -62,32 +77,71 @@ dedupe REPORTS. It never deletes, moves or links anything.`,
 			if minQuality < 0 || minQuality > 100 {
 				return fmt.Errorf("--min-quality must be between 0 and 100, got %d", minQuality)
 			}
+			if audioThreshold < 0 || audioThreshold > 1 {
+				return fmt.Errorf("--audio-threshold must be between 0 and 1, got %v", audioThreshold)
+			}
+			if videoThreshold < 0 || videoThreshold > 1 {
+				return fmt.Errorf("--video-threshold must be between 0 and 1, got %v", videoThreshold)
+			}
+			if audioSeconds < 1 {
+				return fmt.Errorf("--audio-seconds must be at least 1, got %d", audioSeconds)
+			}
+			if videoSeconds < 1 {
+				return fmt.Errorf("--video-seconds must be at least 1, got %d", videoSeconds)
+			}
+			switch only {
+			case "", "image", "audio", "video":
+			default:
+				return fmt.Errorf("--only must be image, audio or video, got %q", only)
+			}
 			return run(cmd, args, options{
-				threshold:  threshold,
-				minQuality: pdq.Quality(minQuality),
-				minSize:    minSize,
-				workers:    workers,
-				exactOnly:  exactOnly,
+				threshold:      threshold,
+				minQuality:     pdq.Quality(minQuality),
+				minSize:        minSize,
+				workers:        workers,
+				exactOnly:      exactOnly,
+				audioThreshold: audioThreshold,
+				videoThreshold: videoThreshold,
+				audioSeconds:   audioSeconds,
+				videoSeconds:   videoSeconds,
+				only:           Kind(only),
 			})
 		},
 	}
 
 	f := cmd.Flags()
-	f.IntVar(&threshold, "threshold", 20, "largest perceptual distance still called a duplicate (0-256)")
+	f.IntVar(&threshold, "threshold", 20, "largest PDQ distance still called the same picture (0-256)")
 	f.IntVar(&minQuality, "min-quality", 50, "ignore images whose PDQ quality is below this (0-100)")
 	f.Int64Var(&minSize, "min-size", 1024, "ignore files smaller than this many bytes")
 	f.IntVar(&workers, "workers", 0, "parallel hashers (0 means one per CPU)")
-	f.BoolVar(&exactOnly, "exact-only", false, "report only byte-identical files, skipping the perceptual pass")
+	f.BoolVar(&exactOnly, "exact-only", false, "report only byte-identical files, skipping every perceptual pass")
+	f.Float64Var(&audioThreshold, "audio-threshold", AudioThreshold,
+		"chroma score at or above which two recordings are the same (0-1)")
+	f.Float64Var(&videoThreshold, "video-threshold", tmk.DefaultThreshold,
+		"TMK score at or above which two videos are the same (0-1)")
+	f.IntVar(&audioSeconds, "audio-seconds", audioSecondsDefault,
+		"compare at most this many seconds of each recording")
+	f.IntVar(&videoSeconds, "video-seconds", videoSecondsDefault,
+		"compare at most this many seconds of each video")
+	f.StringVar(&only, "only", "", "run one pass only: image, audio or video")
 	return cmd
 }
 
 type options struct {
-	threshold  int
-	minQuality pdq.Quality
-	minSize    int64
-	workers    int
-	exactOnly  bool
+	threshold      int
+	minQuality     pdq.Quality
+	minSize        int64
+	workers        int
+	exactOnly      bool
+	audioThreshold float64
+	videoThreshold float64
+	audioSeconds   int
+	videoSeconds   int
+	only           Kind
 }
+
+// wants says whether a pass should run.
+func (o options) wants(k Kind) bool { return o.only == "" || o.only == k }
 
 func run(cmd *cobra.Command, roots []string, o options) error {
 	w := cmd.OutOrStdout()
@@ -98,13 +152,22 @@ func run(cmd *cobra.Command, roots []string, o options) error {
 		}
 	}
 
-	files, walkErrs := walk(roots, o.minSize)
+	found, walkErrs := walk(roots, o.minSize)
 	// ⛔ The volume read is printed beside the result. A scan that found
 	// nothing and a scan that read nothing print the same list of groups, and
 	// only this line tells them apart.
-	fmt.Fprintf(w, "scanned %d file(s) under %d root(s)\n", len(files), len(roots))
-	if len(files) == 0 {
+	fmt.Fprintf(w, "walked %d file(s) under %d root(s)\n", len(found), len(roots))
+	if len(found) == 0 {
 		reportErrors(w, walkErrs, nil, 0)
+		return nil
+	}
+
+	files, other, classErrs := classifyAll(found, o.workers)
+	images, audio, video := byKind(files)
+	fmt.Fprintf(w, "classified by content: %d image(s), %d recording(s), %d video(s); %d not media\n",
+		len(images), len(audio), len(video), other)
+	if len(files) == 0 {
+		reportErrors(w, walkErrs, classErrs, 0)
 		return nil
 	}
 
@@ -116,28 +179,51 @@ func run(cmd *cobra.Command, roots []string, o options) error {
 		return exact[i].Recoverable() > exact[j].Recoverable()
 	})
 
-	var near []Group
-	var hashErrs []error
+	var near, audioG, videoG []Group
+	readErrs := append(append([]error{}, classErrs...), exactErrs...)
 	skipped := 0
+
 	if !o.exactOnly {
-		hs, s, errs := hashAll(files, o.minQuality, o.workers)
-		skipped, hashErrs = s, errs
-		fmt.Fprintf(w, "hashed %d image(s)\n", len(hs))
-		near = nearGroups(hs, o.threshold, claimed)
+		if o.wants(KindImage) && len(images) > 0 {
+			hs, s, errs := hashAll(images, o.minQuality, o.workers)
+			skipped += s
+			readErrs = append(readErrs, errs...)
+			fmt.Fprintf(w, "hashed %d image(s)\n", len(hs))
+			near = nearGroups(hs, o.threshold, claimed)
+		}
+		if o.wants(KindAudio) && len(audio) > 0 {
+			hs, s, errs := hashAudio(audio, o.audioSeconds, o.workers)
+			skipped += s
+			readErrs = append(readErrs, errs...)
+			fmt.Fprintf(w, "fingerprinted %d recording(s)\n", len(hs))
+			audioG = audioGroups(hs, o.audioThreshold, claimed)
+		}
+		if o.wants(KindVideo) && len(video) > 0 {
+			hs, s, errs := hashVideos(video, o.videoSeconds, o.workers)
+			skipped += s
+			readErrs = append(readErrs, errs...)
+			fmt.Fprintf(w, "hashed %d video(s) at level 1\n", len(hs))
+			g, errs2 := videoGroups(hs, o.videoThreshold, o.videoSeconds, claimed)
+			videoG = g
+			readErrs = append(readErrs, errs2...)
+		}
 	}
 
-	report(w, exact, near)
-	reportErrors(w, walkErrs, append(exactErrs, hashErrs...), skipped)
+	report(w, exact, near, audioG, videoG)
+	reportErrors(w, walkErrs, readErrs, skipped)
 	return nil
 }
 
-func report(w interface{ Write([]byte) (int, error) }, exact, near []Group) {
+func report(w interface{ Write([]byte) (int, error) }, exact, near, audio, video []Group) {
 	var total int64
 
-	if len(exact) > 0 {
-		fmt.Fprintf(w, "\nIDENTICAL BYTES — %d group(s)\n", len(exact))
-		for _, g := range exact {
-			fmt.Fprintf(w, "  %s recoverable\n", bytesOf(g.Recoverable()))
+	section := func(title string, groups []Group, detail func(Group) string) {
+		if len(groups) == 0 {
+			return
+		}
+		fmt.Fprintf(w, "\n%s — %d group(s)\n", title, len(groups))
+		for _, g := range groups {
+			fmt.Fprintf(w, "  %s recoverable%s\n", bytesOf(g.Recoverable()), detail(g))
 			for i, f := range g.Files {
 				fmt.Fprintf(w, "    %s %s (%s)\n", keepOrDrop(i), f.Path, bytesOf(f.Size))
 			}
@@ -145,18 +231,18 @@ func report(w interface{ Write([]byte) (int, error) }, exact, near []Group) {
 		}
 	}
 
-	if len(near) > 0 {
-		fmt.Fprintf(w, "\nSAME PICTURE, DIFFERENT BYTES — %d group(s)\n", len(near))
-		for _, g := range near {
-			fmt.Fprintf(w, "  %s recoverable, widest distance %d\n", bytesOf(g.Recoverable()), g.Distance)
-			for i, f := range g.Files {
-				fmt.Fprintf(w, "    %s %s (%s)\n", keepOrDrop(i), f.Path, bytesOf(f.Size))
-			}
-			total += g.Recoverable()
-		}
-	}
+	section("IDENTICAL BYTES", exact, func(Group) string { return "" })
+	section("SAME PICTURE, DIFFERENT BYTES", near, func(g Group) string {
+		return fmt.Sprintf(", widest distance %d", g.Distance)
+	})
+	section("SAME RECORDING, DIFFERENT BYTES", audio, func(g Group) string {
+		return fmt.Sprintf(", weakest pair %.4f", g.Score)
+	})
+	section("SAME VIDEO, DIFFERENT BYTES", video, func(g Group) string {
+		return fmt.Sprintf(", weakest pair %.4f", g.Score)
+	})
 
-	if len(exact) == 0 && len(near) == 0 {
+	if len(exact) == 0 && len(near) == 0 && len(audio) == 0 && len(video) == 0 {
 		fmt.Fprintln(w, "\nno duplicates found")
 		return
 	}
