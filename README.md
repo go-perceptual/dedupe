@@ -125,6 +125,14 @@ beside the groups. ⛔ A non-empty error list means the groups are INCOMPLETE,
 exactly as the command's report says: check it before reading "no duplicates"
 as an answer.
 
+⛔ A file can be in TWO groups. The first file of each `Exact` group (the one
+to keep) also goes through the perceptual pass, so that a PNG with a
+byte-identical copy can still be matched against its own JPEG. A picture held
+as two identical PNGs and two JPEGs therefore comes back as one `Exact` group
+of 2 and one `Near` group of 3 that share a file. To show "how many copies of
+this file", merge the groups that share a file before counting. Counting each
+group on its own gives 2 or 3, never 4.
+
 Cancelling `ctx` stops the scan between files and returns `ctx.Err()` with no
 partial result, since a half-scanned tree reads as "fewer duplicates". The
 library, like the command, reports and never changes anything on disk.

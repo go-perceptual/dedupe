@@ -77,7 +77,9 @@ func hashAll(ctx context.Context, files []File, minQuality pdq.Quality, workers 
 // Distance is the WIDEST distance inside it, so a stretched chain is visible
 // instead of hidden.
 func nearGroups(hs []hashed, threshold int, claimed map[string]bool) []Group {
-	// Files already reported as exact duplicates are not repeated here.
+	// The spare copies of an exact group are not repeated here. Its first
+	// file, the keeper, is, so it can still match a recompressed copy (see
+	// exactGroups and Result.Exact).
 	var todo []hashed
 	for _, h := range hs {
 		if !claimed[h.Path] {
