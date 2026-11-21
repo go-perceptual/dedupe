@@ -116,6 +116,13 @@ type Result struct {
 
 	// Exact holds files with identical bytes; Near, Audio and Video the three
 	// perceptual passes. Each is sorted by recoverable bytes, largest first.
+	//
+	// ⛔ The passes are NOT disjoint. Files[0] of an Exact group (the one to
+	// keep) also takes part in the perceptual passes, so that it can still
+	// be matched against a recompressed copy of itself. The others are left
+	// out. A file can therefore be in one Exact group AND one Near, Audio or
+	// Video group, and a per-file "copies" count must merge groups that share
+	// a file.
 	Exact, Near, Audio, Video []Group
 
 	// Hashed has an entry for every perceptual pass that ran (KindImage,
