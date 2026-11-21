@@ -186,16 +186,11 @@ func videoGroups(ctx context.Context, hs []videoHash, threshold float64, maxSeco
 		return h
 	}
 
-	// score caches the level-2 score of a pair, since the clustering asks for
-	// it once to group and again to report the group's worst pair.
+	// scores keeps the level-2 score of every pair (i < j): the clustering
+	// computes each pair once, and the group's worst pair is read back from
+	// here rather than computed again.
 	scores := map[[2]int]float64{}
 	scoreOf := func(i, j int) float64 {
-		if i > j {
-			i, j = j, i
-		}
-		if s, ok := scores[[2]int{i, j}]; ok {
-			return s
-		}
 		s := 0.0
 		if l1, err := tmk.Level1(todo[i].hash, todo[j].hash); err != nil {
 			errs = append(errs, err)
@@ -233,7 +228,8 @@ func videoGroups(ctx context.Context, hs []videoHash, threshold float64, maxSeco
 		worst := 1.0
 		for a := 0; a < len(idx); a++ {
 			for b := a + 1; b < len(idx); b++ {
-				if s := scoreOf(idx[a], idx[b]); s < worst {
+				// idx is ascending, so idx[a] < idx[b] and the key exists.
+				if s := scores[[2]int{idx[a], idx[b]}]; s < worst {
 					worst = s
 				}
 			}
