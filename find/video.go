@@ -66,19 +66,30 @@ type videoHash struct {
 func hashVideoFile(path string, maxSeconds int, level2 bool) (*tmk.Hash, error) {
 	h := tmk.New()
 	err := media.Frames(path, tmk.FPS, maxSeconds, func(index int, img image.Image) error {
-		feature, _, err := pdq.Float(img)
-		if err != nil {
-			return err
-		}
-		// ⛔ The INDEX media hands over, not a counter of our own: tmk.Add
-		// takes the frame's position in TIME, and the kernel compares phases
-		// at those integer positions.
-		h.Add(index, feature)
-		return nil
+		return addFrame(h, index, img)
 	})
 	if err != nil {
 		return nil, err
 	}
+	return finishHash(h, level2)
+}
+
+// addFrame feeds one frame to the hasher.
+func addFrame(h *tmk.Hasher, index int, img image.Image) error {
+	feature, _, err := pdq.Float(img)
+	if err != nil {
+		return err
+	}
+	// ⛔ The INDEX media hands over, not a counter of our own: tmk.Add
+	// takes the frame's position in TIME, and the kernel compares phases
+	// at those integer positions.
+	h.Add(index, feature)
+	return nil
+}
+
+// finishHash closes the hasher; a hasher that was fed nothing is refused by
+// tmk, and that refusal is passed on rather than turned into an empty hash.
+func finishHash(h *tmk.Hasher, level2 bool) (*tmk.Hash, error) {
 	out, err := h.Finish()
 	if err != nil {
 		return nil, err

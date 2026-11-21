@@ -57,14 +57,8 @@ func audioFeatures(path string, maxSeconds int) ([][]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	features, err := chroma.Features(pcm)
-	if err != nil {
-		return nil, err
-	}
-	if len(features) == 0 {
-		return nil, media.ErrNoSamples
-	}
-	return features, nil
+	// chroma.Features returns ErrTooShort, never an empty slice with a nil error.
+	return chroma.Features(pcm)
 }
 
 // hashAudio computes the chroma features of every audio file, in parallel.

@@ -64,49 +64,56 @@ func (g Group) Recoverable() int64 {
 // that could not read part of the tree has not scanned the tree, and a
 // smaller answer would read as "fewer duplicates".
 func walk(roots []string, minSize int64) ([]File, []error) {
-	var out []File
-	var errs []error
-	seen := map[string]bool{}
-
+	w := &walker{minSize: minSize, seen: map[string]bool{}}
 	for _, root := range roots {
-		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				errs = append(errs, err)
-				return nil // keep going: one unreadable directory is not the tree
-			}
-			if !d.Type().IsRegular() {
-				return nil // directories, symlinks and devices are not content
-			}
-			// ⛔ No extension filter. It used to be here, and it was wrong:
-			// an extension is a claim by whoever named the file, and this
-			// tool's whole job is finding the copy that was renamed. What
-			// a file holds is decided by classifyAll, which reads it.
-			info, err := d.Info()
-			if err != nil {
-				errs = append(errs, err)
-				return nil
-			}
-			if info.Size() < minSize {
-				return nil
-			}
-			abs, err := filepath.Abs(p)
-			if err != nil {
-				abs = p
-			}
-			// The same file reached through two roots is one file.
-			if seen[abs] {
-				return nil
-			}
-			seen[abs] = true
-			out = append(out, File{Path: abs, Size: info.Size()})
-			return nil
-		})
-		if err != nil {
-			errs = append(errs, err)
+		if err := filepath.WalkDir(root, w.visit); err != nil {
+			w.errs = append(w.errs, err)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, errs
+	sort.Slice(w.out, func(i, j int) bool { return w.out[i].Path < w.out[j].Path })
+	return w.out, w.errs
+}
+
+// walker accumulates what walk finds.
+type walker struct {
+	minSize int64
+	seen    map[string]bool
+	out     []File
+	errs    []error
+}
+
+// visit is the WalkDir callback: one failure is recorded and the walk goes on.
+func (w *walker) visit(p string, d fs.DirEntry, err error) error {
+	if err != nil {
+		w.errs = append(w.errs, err)
+		return nil // keep going: one unreadable directory is not the tree
+	}
+	if !d.Type().IsRegular() {
+		return nil // directories, symlinks and devices are not content
+	}
+	// ⛔ No extension filter. It used to be here, and it was wrong:
+	// an extension is a claim by whoever named the file, and this
+	// tool's whole job is finding the copy that was renamed. What
+	// a file holds is decided by classifyAll, which reads it.
+	info, err := d.Info()
+	if err != nil {
+		w.errs = append(w.errs, err)
+		return nil
+	}
+	if info.Size() < w.minSize {
+		return nil
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = p
+	}
+	// The same file reached through two roots is one file.
+	if w.seen[abs] {
+		return nil
+	}
+	w.seen[abs] = true
+	w.out = append(w.out, File{Path: abs, Size: info.Size()})
+	return nil
 }
 
 // classifyAll reads each file's header and keeps only the media ones.
@@ -291,6 +298,11 @@ func perceptual(path string, minQuality pdq.Quality) (hashed, error) {
 	if err != nil {
 		return hashed{}, err
 	}
+	return hashImage(img, minQuality)
+}
+
+// hashImage hashes a decoded image, refusing one below minQuality.
+func hashImage(img image.Image, minQuality pdq.Quality) (hashed, error) {
 	h, q, err := pdq.Sum(img)
 	if err != nil {
 		return hashed{}, err
