@@ -154,9 +154,6 @@ func Find(ctx context.Context, roots []string, o Options) (Result, error) {
 	found, walkErrs := walk(roots, o.MinSize)
 	res.Walked = len(found)
 	res.WalkErrors = walkErrs
-	if err := ctx.Err(); err != nil {
-		return Result{}, err
-	}
 	if len(found) == 0 {
 		return res, nil
 	}
@@ -181,9 +178,6 @@ func Find(ctx context.Context, roots []string, o Options) (Result, error) {
 	})
 	res.Exact = exact
 	res.ReadErrors = append(append([]error{}, classErrs...), exactErrs...)
-	if err := ctx.Err(); err != nil {
-		return Result{}, err
-	}
 
 	if o.ExactOnly {
 		return res, nil

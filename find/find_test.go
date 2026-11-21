@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-perceptual/tmk"
@@ -84,6 +85,61 @@ func TestDefaultOptionsAreValidAndMatchTheCommand(t *testing.T) {
 	}
 	if err := (Options{}).Validate(); err == nil {
 		t.Error("the zero Options was accepted, but AudioSeconds 0 must be refused")
+	}
+}
+
+func TestAnEmptyTreeIsAResultNotAnError(t *testing.T) {
+	res, err := Find(context.Background(), []string{t.TempDir()}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Roots != 1 || res.Walked != 0 || res.Hashed != nil || res.Exact != nil {
+		t.Errorf("empty tree: %+v", res)
+	}
+}
+
+// TestAFileThatIsNotMediaStopsTheScanAfterClassification: no pass runs, so
+// Hashed stays nil, and the file is counted rather than swallowed.
+func TestAFileThatIsNotMediaStopsTheScanAfterClassification(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(strings.Repeat("not media at all. ", 200))
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Find(context.Background(), []string{dir}, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Walked != 1 || res.NotMedia != 1 || res.Images+res.Recordings+res.Videos != 0 {
+		t.Errorf("counts: %+v", res)
+	}
+	if res.Hashed != nil || len(res.ReadErrors) != 0 {
+		t.Errorf("a pass ran or an error appeared: %+v", res)
+	}
+}
+
+func TestTheWalkTakesRegularFilesOnly(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.mp3")
+	copyFixture(t, fixtures+"melody.mp3", target)
+	if err := os.Symlink(target, filepath.Join(dir, "link.mp3")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files, errs := walk([]string{dir}, 0)
+	if len(errs) != 0 || len(files) != 1 || filepath.Base(files[0].Path) != "real.mp3" {
+		t.Errorf("walk = %+v, %v; want only real.mp3", files, errs)
+	}
+}
+
+func TestAGroupIsOrderedLargestFirstThenByPath(t *testing.T) {
+	g := Group{Files: []File{{Path: "b", Size: 5}, {Path: "z", Size: 9}, {Path: "a", Size: 5}}}
+	sortGroup(&g)
+	got := g.Files[0].Path + g.Files[1].Path + g.Files[2].Path
+	if got != "zab" {
+		t.Errorf("order = %q, want zab", got)
 	}
 }
 
