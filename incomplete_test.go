@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-perceptual/media"
 )
 
 // TestATruncatedImageMakesTheReportSayIncomplete is the guard on the warning
@@ -47,16 +49,15 @@ func TestATruncatedImageMakesTheReportSayIncomplete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	kind, err := classify(truncated)
+	kind, err := media.Classify(truncated)
 	if err != nil {
 		t.Fatalf("classifying the truncated file: %v", err)
 	}
-	if kind != KindImage {
+	if kind != media.KindImage {
 		t.Fatalf("the truncated file classified as %q, so this test is not staging a readable header", kind)
 	}
-	if _, err := perceptual(truncated, 0); err == nil {
-		t.Fatal("the truncated file decoded fully, so there is nothing for the report to call incomplete")
-	}
+	// (That its pixels cannot be hashed is asserted in find, beside perceptual;
+	// here the report's INCOMPLETE line is the proof.)
 
 	// A second image, so the pass has something to do besides fail.
 	writePNG(t, filepath.Join(dir, "fine.png"), picture(200, 200, 9))

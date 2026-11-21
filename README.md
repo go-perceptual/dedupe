@@ -100,6 +100,37 @@ So: point it at `~/Downloads`, a photo import, a scrape. Over checkouts,
 build outputs or anything version-controlled it will faithfully report the
 copies that are supposed to be there. This is also why it never deletes.
 
+## Use as a library
+
+The grouping behind the command is importable, so a program with a window can
+mark duplicate files without running `dedupe` and parsing its text:
+
+```go
+import "github.com/go-perceptual/dedupe/find"
+
+o := find.DefaultOptions() // the flag defaults of the command, exactly
+o.Only = find.KindImage    // optional: one pass only
+res, err := find.Find(ctx, []string{"/photos"}, o)
+if err != nil {
+	return err // a missing root, an invalid option, or ctx cancelled
+}
+for _, g := range res.Exact { // also res.Near, res.Audio, res.Video
+	// g.Files[0] is the one to keep; g.Recoverable() is what the rest free.
+}
+```
+
+`Result` carries the volume read (`Walked`, `Images`, `Recordings`, `Videos`,
+`NotMedia`, `Hashed`, `Skipped`) and the errors (`WalkErrors`, `ReadErrors`)
+beside the groups. ⛔ A non-empty error list means the groups are INCOMPLETE,
+exactly as the command's report says: check it before reading "no duplicates"
+as an answer.
+
+Cancelling `ctx` stops the scan between files and returns `ctx.Err()` with no
+partial result, since a half-scanned tree reads as "fewer duplicates". The
+library, like the command, reports and never changes anything on disk.
+`go install github.com/go-perceptual/dedupe@latest` installs the command as
+before.
+
 ## Flags
 
 | flag | default | |

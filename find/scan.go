@@ -1,6 +1,7 @@
-package main
+package find
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -125,7 +126,7 @@ func walk(roots []string, minSize int64) ([]File, []error) {
 // scan of ten thousand files that classified nine thousand as other has
 // either met a tree with little media in it or a broken classifier, and only
 // the number distinguishes those.
-func classifyAll(files []File, workers int) (media []File, other int, errs []error) {
+func classifyAll(ctx context.Context, files []File, workers int) (media []File, other int, errs []error) {
 	if workers < 1 {
 		workers = runtime.NumCPU()
 	}
@@ -157,9 +158,7 @@ func classifyAll(files []File, workers int) (media []File, other int, errs []err
 		}()
 	}
 	go func() {
-		for _, f := range files {
-			in <- f
-		}
+		feed(ctx, in, files)
 		close(in)
 		wg.Wait()
 		close(out)

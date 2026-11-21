@@ -1,6 +1,7 @@
-package main
+package find
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -30,7 +31,7 @@ import (
 // quarter-scale one, while an unrelated clip scores -0.0829.
 const Level1Gate = 0.5
 
-// videoSecondsDefault bounds how much of each video is hashed.
+// VideoSecondsDefault bounds how much of each video is hashed.
 //
 // ⛔ Bounded for TIME, not memory: the level-1 sweep already holds only a
 // kilobyte a video, but DECODING is the expensive part — every frame of every
@@ -40,7 +41,7 @@ const Level1Gate = 0.5
 // ⚠ What it costs: two videos that differ only after the window are reported
 // as the same. Three minutes is enough to separate different films and short
 // enough to keep a scan interactive.
-const videoSecondsDefault = 180
+const VideoSecondsDefault = 180
 
 // videoHash is one video's signature.
 type videoHash struct {
@@ -92,7 +93,7 @@ func hashVideoFile(path string, maxSeconds int, level2 bool) (*tmk.Hash, error) 
 }
 
 // hashVideos computes the level-1 signature of every video, in parallel.
-func hashVideos(files []File, maxSeconds, workers int) ([]videoHash, int, []error) {
+func hashVideos(ctx context.Context, files []File, maxSeconds, workers int) ([]videoHash, int, []error) {
 	if workers < 1 {
 		workers = runtime.NumCPU()
 	}
@@ -123,9 +124,7 @@ func hashVideos(files []File, maxSeconds, workers int) ([]videoHash, int, []erro
 		}()
 	}
 	go func() {
-		for _, f := range files {
-			in <- f
-		}
+		feed(ctx, in, files)
 		close(in)
 		wg.Wait()
 		close(out)
@@ -149,7 +148,7 @@ func hashVideos(files []File, maxSeconds, workers int) ([]videoHash, int, []erro
 }
 
 // videoGroups clusters videos whose level-2 score reaches threshold.
-func videoGroups(hs []videoHash, threshold float64, maxSeconds int, claimed map[string]bool) ([]Group, []error) {
+func videoGroups(ctx context.Context, hs []videoHash, threshold float64, maxSeconds int, claimed map[string]bool) ([]Group, []error) {
 	var todo []videoHash
 	for _, h := range hs {
 		if !claimed[h.Path] {
@@ -204,6 +203,9 @@ func videoGroups(hs []videoHash, threshold float64, maxSeconds int, claimed map[
 
 	uf := newUnionFind(len(todo))
 	for i := 0; i < len(todo); i++ {
+		if ctx.Err() != nil {
+			return nil, errs // the caller reports ctx.Err(); a partial answer is not returned
+		}
 		for j := i + 1; j < len(todo); j++ {
 			if scoreOf(i, j) >= threshold {
 				uf.union(i, j)

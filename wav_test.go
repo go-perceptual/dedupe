@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/go-perceptual/chroma"
 )
 
 // ⛔ The tests for isPCM, pcmMono, pcmValue, toMono, resampleToFeatureRate,
@@ -114,23 +112,10 @@ func TestAWAVReachesTheGrouping(t *testing.T) {
 	p := filepath.Join(dir, "a.wav")
 	writeWAV(t, p, melody(fourChords(), 44100), 44100)
 
-	if k, err := classify(p); err != nil || k != KindAudio {
-		t.Fatalf("classify = %q, %v; want audio", k, err)
-	}
-	features, err := audioFeatures(p, audioSecondsDefault)
-	if err != nil {
-		t.Fatalf("reading a WAV: %v", err)
-	}
-	if len(features) == 0 {
-		t.Fatal("no features from four seconds of audio")
-	}
-	for i, f := range features {
-		if len(f) != 12 {
-			t.Fatalf("frame %d has %d bands, want 12", i, len(f))
-		}
-	}
+	// (That a WAV classifies as audio and yields 12-band features is asserted
+	// in find/wav_test.go, beside the code.)
 
-	// And through the whole tool: the same music as a WAV and as a FLAC must
+	// Through the whole tool: the same music as a WAV and as a FLAC must
 	// group, which exercises the passthrough and a real decoder against each
 	// other.
 	copyFixture(t, "testdata/melody.flac", filepath.Join(dir, "b.flac"))
@@ -140,49 +125,5 @@ func TestAWAVReachesTheGrouping(t *testing.T) {
 	}
 	if !strings.Contains(out, "SAME RECORDING, DIFFERENT BYTES — 1 group(s)") {
 		t.Fatalf("a WAV and a FLAC of the same music were not grouped:\n%s", out)
-	}
-}
-
-// TestAudioSecondsBoundsWhatIsRead covers the limit that keeps a tree of
-// albums from being held in memory at once.
-func TestAudioSecondsBoundsWhatIsRead(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "long.wav")
-	writeWAV(t, p, melody(fourChords(), 44100), 44100) // four seconds
-
-	long, err := audioFeatures(p, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	short, err := audioFeatures(p, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(short) >= len(long) {
-		t.Errorf("--audio-seconds did not bound the read: 1 s gave %d frames, 4 s gave %d",
-			len(short), len(long))
-	}
-	// Roughly chroma.SampleRate/chroma.Hop frames a second; the bound should
-	// land near that rather than anywhere at all.
-	perSecond := float64(chroma.SampleRate) / float64(chroma.Hop)
-	if float64(len(short)) > 2*perSecond {
-		t.Errorf("one second gave %d frames, far more than the ~%.0f expected", len(short), perSecond)
-	}
-}
-
-// TestTheWrappersRefuseTheWrongMedium: audioFeatures and hashVideoFile are
-// this repository's thin wrappers, and a wrapper that swallowed an error
-// would turn a missing track into an empty result.
-func TestTheWrappersRefuseTheWrongMedium(t *testing.T) {
-	if _, err := audioFeatures("testdata/clip-360p.mp4", audioSecondsDefault); err == nil {
-		t.Error("a silent video yielded audio features")
-	}
-	if _, err := hashVideoFile("testdata/melody.flac", videoSecondsDefault, false); err == nil {
-		t.Error("an audio file yielded a video hash")
-	}
-	if _, err := audioFeatures(filepath.Join(t.TempDir(), "absent.wav"), audioSecondsDefault); err == nil {
-		t.Error("a missing file yielded audio features")
-	}
-	if _, err := hashVideoFile(filepath.Join(t.TempDir(), "absent.mp4"), videoSecondsDefault, false); err == nil {
-		t.Error("a missing file yielded a video hash")
 	}
 }

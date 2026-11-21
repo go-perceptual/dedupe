@@ -17,12 +17,14 @@ package main
 import (
 	"fmt"
 	"os"
-	"sort"
 
+	"github.com/go-perceptual/dedupe/find"
 	"github.com/go-perceptual/pdq"
-	"github.com/go-perceptual/tmk"
 	"github.com/spf13/cobra"
 )
+
+// Group is what the report prints; it is the library's type.
+type Group = find.Group
 
 // osExit allows tests to override os.Exit.
 var osExit = os.Exit
@@ -94,123 +96,77 @@ dedupe REPORTS. It never deletes, moves or links anything.`,
 			default:
 				return fmt.Errorf("--only must be image, audio or video, got %q", only)
 			}
-			return run(cmd, args, options{
-				threshold:      threshold,
-				minQuality:     pdq.Quality(minQuality),
-				minSize:        minSize,
-				workers:        workers,
-				exactOnly:      exactOnly,
-				audioThreshold: audioThreshold,
-				videoThreshold: videoThreshold,
-				audioSeconds:   audioSeconds,
-				videoSeconds:   videoSeconds,
-				only:           Kind(only),
+			return run(cmd, args, find.Options{
+				Threshold:      threshold,
+				MinQuality:     pdq.Quality(minQuality),
+				MinSize:        minSize,
+				Workers:        workers,
+				ExactOnly:      exactOnly,
+				AudioThreshold: audioThreshold,
+				VideoThreshold: videoThreshold,
+				AudioSeconds:   audioSeconds,
+				VideoSeconds:   videoSeconds,
+				Only:           find.Kind(only),
 			})
 		},
 	}
 
+	// The flag defaults ARE the library's defaults: one place says them.
+	d := find.DefaultOptions()
 	f := cmd.Flags()
-	f.IntVar(&threshold, "threshold", 20, "largest PDQ distance still called the same picture (0-256)")
-	f.IntVar(&minQuality, "min-quality", 50, "ignore images whose PDQ quality is below this (0-100)")
-	f.Int64Var(&minSize, "min-size", 1024, "ignore files smaller than this many bytes")
-	f.IntVar(&workers, "workers", 0, "parallel hashers (0 means one per CPU)")
-	f.BoolVar(&exactOnly, "exact-only", false, "report only byte-identical files, skipping every perceptual pass")
-	f.Float64Var(&audioThreshold, "audio-threshold", AudioThreshold,
+	f.IntVar(&threshold, "threshold", d.Threshold, "largest PDQ distance still called the same picture (0-256)")
+	f.IntVar(&minQuality, "min-quality", int(d.MinQuality), "ignore images whose PDQ quality is below this (0-100)")
+	f.Int64Var(&minSize, "min-size", d.MinSize, "ignore files smaller than this many bytes")
+	f.IntVar(&workers, "workers", d.Workers, "parallel hashers (0 means one per CPU)")
+	f.BoolVar(&exactOnly, "exact-only", d.ExactOnly, "report only byte-identical files, skipping every perceptual pass")
+	f.Float64Var(&audioThreshold, "audio-threshold", d.AudioThreshold,
 		"chroma score at or above which two recordings are the same (0-1)")
-	f.Float64Var(&videoThreshold, "video-threshold", tmk.DefaultThreshold,
+	f.Float64Var(&videoThreshold, "video-threshold", d.VideoThreshold,
 		"TMK score at or above which two videos are the same (0-1)")
-	f.IntVar(&audioSeconds, "audio-seconds", audioSecondsDefault,
+	f.IntVar(&audioSeconds, "audio-seconds", d.AudioSeconds,
 		"compare at most this many seconds of each recording")
-	f.IntVar(&videoSeconds, "video-seconds", videoSecondsDefault,
+	f.IntVar(&videoSeconds, "video-seconds", d.VideoSeconds,
 		"compare at most this many seconds of each video")
 	f.StringVar(&only, "only", "", "run one pass only: image, audio or video")
 	return cmd
 }
 
-type options struct {
-	threshold      int
-	minQuality     pdq.Quality
-	minSize        int64
-	workers        int
-	exactOnly      bool
-	audioThreshold float64
-	videoThreshold float64
-	audioSeconds   int
-	videoSeconds   int
-	only           Kind
-}
-
-// wants says whether a pass should run.
-func (o options) wants(k Kind) bool { return o.only == "" || o.only == k }
-
-func run(cmd *cobra.Command, roots []string, o options) error {
+func run(cmd *cobra.Command, roots []string, o find.Options) error {
 	w := cmd.OutOrStdout()
 
-	for _, r := range roots {
-		if _, err := os.Stat(r); err != nil {
-			return err
-		}
+	res, err := find.Find(cmd.Context(), roots, o)
+	if err != nil {
+		return err
 	}
 
-	found, walkErrs := walk(roots, o.minSize)
 	// ⛔ The volume read is printed beside the result. A scan that found
 	// nothing and a scan that read nothing print the same list of groups, and
 	// only this line tells them apart.
-	fmt.Fprintf(w, "walked %d file(s) under %d root(s)\n", len(found), len(roots))
-	if len(found) == 0 {
-		reportErrors(w, walkErrs, nil, 0)
+	fmt.Fprintf(w, "walked %d file(s) under %d root(s)\n", res.Walked, res.Roots)
+	if res.Walked == 0 {
+		reportErrors(w, res.WalkErrors, nil, 0)
 		return nil
 	}
 
-	files, other, classErrs := classifyAll(found, o.workers)
-	images, audio, video := byKind(files)
 	fmt.Fprintf(w, "classified by content: %d image(s), %d recording(s), %d video(s); %d not media\n",
-		len(images), len(audio), len(video), other)
-	if len(files) == 0 {
-		reportErrors(w, walkErrs, classErrs, 0)
+		res.Images, res.Recordings, res.Videos, res.NotMedia)
+	if res.Images+res.Recordings+res.Videos == 0 {
+		reportErrors(w, res.WalkErrors, res.ReadErrors, 0)
 		return nil
 	}
 
-	exact, claimed, exactErrs := exactGroups(files)
-	for i := range exact {
-		sortGroup(&exact[i])
+	if n, ok := res.Hashed[find.KindImage]; ok {
+		fmt.Fprintf(w, "hashed %d image(s)\n", n)
 	}
-	sort.Slice(exact, func(i, j int) bool {
-		return exact[i].Recoverable() > exact[j].Recoverable()
-	})
-
-	var near, audioG, videoG []Group
-	readErrs := append(append([]error{}, classErrs...), exactErrs...)
-	skipped := 0
-
-	if !o.exactOnly {
-		if o.wants(KindImage) && len(images) > 0 {
-			hs, s, errs := hashAll(images, o.minQuality, o.workers)
-			skipped += s
-			readErrs = append(readErrs, errs...)
-			fmt.Fprintf(w, "hashed %d image(s)\n", len(hs))
-			near = nearGroups(hs, o.threshold, claimed)
-		}
-		if o.wants(KindAudio) && len(audio) > 0 {
-			hs, s, errs := hashAudio(audio, o.audioSeconds, o.workers)
-			skipped += s
-			readErrs = append(readErrs, errs...)
-			fmt.Fprintf(w, "fingerprinted %d recording(s)\n", len(hs))
-			audioG = audioGroups(hs, o.audioThreshold, claimed)
-		}
-		if o.wants(KindVideo) && len(video) > 0 {
-			hs, s, errs := hashVideos(video, o.videoSeconds, o.workers)
-			skipped += s
-			readErrs = append(readErrs, errs...)
-			fmt.Fprintf(w, "hashed %d video(s) at level 1\n", len(hs))
-			g, errs2 := videoGroups(hs, o.videoThreshold, o.videoSeconds, claimed)
-			videoG = g
-			readErrs = append(readErrs, errs2...)
-		}
+	if n, ok := res.Hashed[find.KindAudio]; ok {
+		fmt.Fprintf(w, "fingerprinted %d recording(s)\n", n)
+	}
+	if n, ok := res.Hashed[find.KindVideo]; ok {
+		fmt.Fprintf(w, "hashed %d video(s) at level 1\n", n)
 	}
 
-	report(w, exact, near, audioG, videoG)
-	reportErrors(w, walkErrs, readErrs, skipped)
+	report(w, res.Exact, res.Near, res.Audio, res.Video)
+	reportErrors(w, res.WalkErrors, res.ReadErrors, res.Skipped)
 	return nil
 }
 

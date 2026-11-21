@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-perceptual/media"
 )
 
 // TestTheErrorListIsTruncatedAndSaysSoBy covers the branch that keeps a
@@ -67,7 +69,7 @@ func TestACorruptVideoMakesTheReportSayIncomplete(t *testing.T) {
 	// The premise, checked rather than assumed: the file must be REFUSED with
 	// an error, not quietly classified as something that is not media. Those
 	// two outcomes print differently and only one of them warns.
-	kind, err := classify(truncated)
+	kind, err := media.Classify(truncated)
 	if err == nil {
 		t.Fatalf("a truncated MP4 classified cleanly as %q, so nothing warns about it", kind)
 	}
@@ -123,8 +125,8 @@ func TestAnUnsupportedCodecIsReportedNotSkipped(t *testing.T) {
 
 	// The premise: the container DOES read it, so this is not a classification
 	// failure dressed up as a decode one.
-	kind, err := classify(filepath.Join(dir, "clip.webm"))
-	if err != nil || kind != KindVideo {
+	kind, err := media.Classify(filepath.Join(dir, "clip.webm"))
+	if err != nil || kind != media.KindVideo {
 		t.Fatalf("the VP9 fixture classified as %q (%v); it should be readable video", kind, err)
 	}
 
@@ -213,8 +215,8 @@ func TestAnEmptyFileIsNotMedia(t *testing.T) {
 	if err := os.WriteFile(p, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	k, err := classify(p)
-	if k != KindOther {
+	k, err := media.Classify(p)
+	if k != media.KindOther {
 		t.Errorf("an empty file classified as %q", k)
 	}
 	if err != nil && !errors.Is(err, os.ErrClosed) {

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-perceptual/dedupe/find"
 )
 
 // picture is a deterministic image with enough structure that PDQ scores it
@@ -174,11 +176,11 @@ func TestReportsTheVolumeScanned(t *testing.T) {
 
 // TestRecoverableCountsAllButOne is the arithmetic the whole report rests on.
 func TestRecoverableCountsAllButOne(t *testing.T) {
-	g := Group{Files: []File{{Size: 100}, {Size: 90}, {Size: 80}}}
+	g := Group{Files: []find.File{{Size: 100}, {Size: 90}, {Size: 80}}}
 	if got := g.Recoverable(); got != 170 {
 		t.Fatalf("Recoverable = %d, want 170 (90+80, keeping the first)", got)
 	}
-	one := Group{Files: []File{{Size: 100}}}
+	one := Group{Files: []find.File{{Size: 100}}}
 	if got := one.Recoverable(); got != 0 {
 		t.Fatalf("a group of one frees %d, want 0", got)
 	}
