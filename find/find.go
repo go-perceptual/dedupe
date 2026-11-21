@@ -137,6 +137,20 @@ type Result struct {
 // "fewer duplicates". Files that cannot be read are NOT an error: they are
 // listed in the Result.
 func Find(ctx context.Context, roots []string, o Options) (Result, error) {
+	res, err := find(ctx, roots, o)
+	if err != nil {
+		return res, err
+	}
+	// One check, after every exit: each pass stops feeding its workers once ctx
+	// is cancelled, so a cancelled scan only finishes quickly with less than the
+	// whole tree, and that must not be returned as an answer.
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	return res, nil
+}
+
+func find(ctx context.Context, roots []string, o Options) (Result, error) {
 	var res Result
 	if err := o.Validate(); err != nil {
 		return res, err
@@ -146,22 +160,13 @@ func Find(ctx context.Context, roots []string, o Options) (Result, error) {
 			return res, err
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return res, err
-	}
 
 	res.Roots = len(roots)
 	found, walkErrs := walk(roots, o.MinSize)
 	res.Walked = len(found)
 	res.WalkErrors = walkErrs
-	if len(found) == 0 {
-		return res, nil
-	}
 
 	files, other, classErrs := classifyAll(ctx, found, o.Workers)
-	if err := ctx.Err(); err != nil {
-		return Result{}, err
-	}
 	images, audio, video := byKind(files)
 	res.Images, res.Recordings, res.Videos, res.NotMedia = len(images), len(audio), len(video), other
 	res.ReadErrors = classErrs
@@ -185,9 +190,6 @@ func Find(ctx context.Context, roots []string, o Options) (Result, error) {
 	res.Hashed = map[Kind]int{}
 	if o.wants(KindImage) && len(images) > 0 {
 		hs, s, errs := hashAll(ctx, images, o.MinQuality, o.Workers)
-		if err := ctx.Err(); err != nil {
-			return Result{}, err
-		}
 		res.Skipped += s
 		res.ReadErrors = append(res.ReadErrors, errs...)
 		res.Hashed[KindImage] = len(hs)
@@ -195,9 +197,6 @@ func Find(ctx context.Context, roots []string, o Options) (Result, error) {
 	}
 	if o.wants(KindAudio) && len(audio) > 0 {
 		hs, s, errs := hashAudio(ctx, audio, o.AudioSeconds, o.Workers)
-		if err := ctx.Err(); err != nil {
-			return Result{}, err
-		}
 		res.Skipped += s
 		res.ReadErrors = append(res.ReadErrors, errs...)
 		res.Hashed[KindAudio] = len(hs)
@@ -205,16 +204,10 @@ func Find(ctx context.Context, roots []string, o Options) (Result, error) {
 	}
 	if o.wants(KindVideo) && len(video) > 0 {
 		hs, s, errs := hashVideos(ctx, video, o.VideoSeconds, o.Workers)
-		if err := ctx.Err(); err != nil {
-			return Result{}, err
-		}
 		res.Skipped += s
 		res.ReadErrors = append(res.ReadErrors, errs...)
 		res.Hashed[KindVideo] = len(hs)
 		g, errs2 := videoGroups(ctx, hs, o.VideoThreshold, o.VideoSeconds, claimed)
-		if err := ctx.Err(); err != nil {
-			return Result{}, err
-		}
 		res.Video = g
 		res.ReadErrors = append(res.ReadErrors, errs2...)
 	}

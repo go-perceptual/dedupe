@@ -74,11 +74,8 @@ func walk(roots []string, minSize int64) ([]File, []error) {
 				errs = append(errs, err)
 				return nil // keep going: one unreadable directory is not the tree
 			}
-			if d.IsDir() {
-				return nil
-			}
 			if !d.Type().IsRegular() {
-				return nil // symlinks and devices are not content
+				return nil // directories, symlinks and devices are not content
 			}
 			// ⛔ No extension filter. It used to be here, and it was wrong:
 			// an extension is a claim by whoever named the file, and this

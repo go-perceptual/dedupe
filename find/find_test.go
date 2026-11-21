@@ -269,3 +269,56 @@ func TestATruncatedImageCannotBeHashed(t *testing.T) {
 		t.Fatal("the truncated file decoded fully")
 	}
 }
+
+// TestFeedSendsNothingOnceCancelled: with room in the channel both select cases
+// are ready, so only the explicit check before it keeps the files back.
+func TestFeedSendsNothingOnceCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	in := make(chan File, 500)
+	feed(ctx, in, make([]File, 500))
+	if n := len(in); n != 0 {
+		t.Errorf("feed sent %d file(s) after cancellation", n)
+	}
+}
+
+// TestACancelledExactOnlyScanIsAnError: ExactOnly leaves Find early, and that
+// exit must be held to the same rule as the others.
+func TestACancelledExactOnlyScanIsAnError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	o := DefaultOptions()
+	o.ExactOnly = true
+	if _, err := Find(ctx, []string{"../testdata"}, o); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if _, err := Find(ctx, []string{t.TempDir()}, o); !errors.Is(err, context.Canceled) {
+		t.Errorf("empty tree: err = %v, want context.Canceled", err)
+	}
+}
+
+// TestAnUnreadableDirectoryIsReported: the rest of the tree is still walked,
+// and the directory that could not be read is listed, not skipped silently.
+func TestAnUnreadableDirectoryIsReported(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every directory")
+	}
+	dir := t.TempDir()
+	copyFixture(t, fixtures+"melody.mp3", filepath.Join(dir, "ok.mp3"))
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(locked, 0o755)
+	files, errs := walk([]string{dir}, 0)
+	if len(files) != 1 || len(errs) != 1 {
+		t.Errorf("walk = %d file(s), %v; want 1 file and the locked directory", len(files), errs)
+	}
+	res, err := Find(context.Background(), []string{dir}, DefaultOptions())
+	if err != nil || len(res.WalkErrors) != 1 {
+		t.Errorf("Find: %v, WalkErrors=%v", err, res.WalkErrors)
+	}
+}
