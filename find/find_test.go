@@ -313,6 +313,13 @@ func TestAnUnreadableDirectoryIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Chmod(locked, 0o755)
+	// Windows maps a mode of 0 to the read-only attribute, which does not stop
+	// a directory being listed (measured: CI windows-latest walked straight
+	// through it). The fixture has to fail on its own before the test means
+	// anything, so check that it does rather than naming platforms.
+	if _, err := os.ReadDir(locked); err == nil {
+		t.Skip("a mode of 0 does not lock a directory on this platform")
+	}
 	files, errs := walk([]string{dir}, 0)
 	if len(files) != 1 || len(errs) != 1 {
 		t.Errorf("walk = %d file(s), %v; want 1 file and the locked directory", len(files), errs)
