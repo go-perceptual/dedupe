@@ -1,6 +1,7 @@
-package main
+package find
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -22,7 +23,7 @@ import (
 // piece. The natural-looking 0.7 admits a reversed recording.
 const AudioThreshold = 0.9
 
-// audioSecondsDefault bounds how much of each recording is compared.
+// AudioSecondsDefault bounds how much of each recording is compared.
 //
 // ⛔ A bound is necessary, not a preference. Chroma features are roughly 97
 // float64 a second (8.077 frames of 12 bands), so a five-minute track is
@@ -34,7 +35,7 @@ const AudioThreshold = 0.9
 // only AFTER the window are reported as the same, and a clip taken from
 // beyond the window does not match its source. Raise --audio-seconds when
 // that matters; the memory grows linearly with it.
-const audioSecondsDefault = 180
+const AudioSecondsDefault = 180
 
 // audioFeature is one recording's chroma profile.
 type audioFeature struct {
@@ -56,18 +57,12 @@ func audioFeatures(path string, maxSeconds int) ([][]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	features, err := chroma.Features(pcm)
-	if err != nil {
-		return nil, err
-	}
-	if len(features) == 0 {
-		return nil, media.ErrNoSamples
-	}
-	return features, nil
+	// chroma.Features returns ErrTooShort, never an empty slice with a nil error.
+	return chroma.Features(pcm)
 }
 
 // hashAudio computes the chroma features of every audio file, in parallel.
-func hashAudio(files []File, maxSeconds, workers int) ([]audioFeature, int, []error) {
+func hashAudio(ctx context.Context, files []File, maxSeconds, workers int) ([]audioFeature, int, []error) {
 	if workers < 1 {
 		workers = runtime.NumCPU()
 	}
@@ -104,9 +99,7 @@ func hashAudio(files []File, maxSeconds, workers int) ([]audioFeature, int, []er
 		}()
 	}
 	go func() {
-		for _, f := range files {
-			in <- f
-		}
+		feed(ctx, in, files)
 		close(in)
 		wg.Wait()
 		close(out)

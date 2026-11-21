@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-perceptual/dedupe/find"
 )
 
 // picture is a deterministic image with enough structure that PDQ scores it
@@ -173,12 +175,36 @@ func TestReportsTheVolumeScanned(t *testing.T) {
 }
 
 // TestRecoverableCountsAllButOne is the arithmetic the whole report rests on.
+// TestTheEarlyExitsPrintOnlyWhatWasRead: an empty tree stops after the
+// "walked" line, and a tree of non-media stops after "classified" without
+// claiming "no duplicates found" for passes that never ran.
+func TestTheEarlyExitsPrintOnlyWhatWasRead(t *testing.T) {
+	out, err := runCLI(t, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "classified") || strings.Contains(out, "no duplicates") {
+		t.Errorf("an empty tree printed more than it read:\n%s", out)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "n.txt"), []byte(strings.Repeat("plain text. ", 300)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "classified by content: 0 image(s)") || strings.Contains(out, "no duplicates") {
+		t.Errorf("a tree of non-media:\n%s", out)
+	}
+}
+
 func TestRecoverableCountsAllButOne(t *testing.T) {
-	g := Group{Files: []File{{Size: 100}, {Size: 90}, {Size: 80}}}
+	g := Group{Files: []find.File{{Size: 100}, {Size: 90}, {Size: 80}}}
 	if got := g.Recoverable(); got != 170 {
 		t.Fatalf("Recoverable = %d, want 170 (90+80, keeping the first)", got)
 	}
-	one := Group{Files: []File{{Size: 100}}}
+	one := Group{Files: []find.File{{Size: 100}}}
 	if got := one.Recoverable(); got != 0 {
 		t.Fatalf("a group of one frees %d, want 0", got)
 	}

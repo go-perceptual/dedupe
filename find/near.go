@@ -1,6 +1,7 @@
-package main
+package find
 
 import (
+	"context"
 	"runtime"
 	"sort"
 	"sync"
@@ -13,7 +14,7 @@ import (
 // Errors are collected, not fatal: one undecodable file must not end the
 // scan, and the count of files that could not be read is reported beside the
 // result so a short answer cannot be mistaken for a clean one.
-func hashAll(files []File, minQuality pdq.Quality, workers int) ([]hashed, int, []error) {
+func hashAll(ctx context.Context, files []File, minQuality pdq.Quality, workers int) ([]hashed, int, []error) {
 	if workers < 1 {
 		workers = runtime.NumCPU()
 	}
@@ -46,9 +47,7 @@ func hashAll(files []File, minQuality pdq.Quality, workers int) ([]hashed, int, 
 		}()
 	}
 	go func() {
-		for _, f := range files {
-			in <- f
-		}
+		feed(ctx, in, files)
 		close(in)
 		wg.Wait()
 		close(out)
